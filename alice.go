@@ -75,6 +75,18 @@ func (updates Stream) Loop(f Handler) {
 	}
 }
 
+// Task обработка лишь одного пакета.
+func (updates Stream) Task(f Handler) {
+	kit, ok := <-updates
+	if !ok {
+		return
+	}
+	go func(k Kit) {
+		k.c <- f(k)
+		close(k.c)
+	}(kit)
+}
+
 // ListenForWebhook регистрирует обработчик входящих пакетов.
 func ListenForWebhook(hook string, opts ...func(*Options)) Stream {
 	conf := Options{
@@ -180,6 +192,82 @@ func webhook(conf Options, stream chan<- Kit) http.HandlerFunc {
 		if err := encoder.Encode(&response); err != nil {
 			log.Println(err)
 			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}
+}
+
+type cloudHandlerFunc func(ctx context.Context, request []byte)
+
+func ListenForCloudHandler(ctx context.Context, req []byte, opts ...func(*Options)) Stream {
+
+	conf := Options{
+		AutoPong: true,
+		Debug:    false,
+	}
+	for _, opt := range opts {
+		opt(&conf)
+	}
+
+	stream := make(chan Kit, 1)
+	handler := cloudHandler(conf, stream)
+	go handler(ctx, req)
+	return stream
+}
+
+func cloudHandler(conf Options, stream chan<- Kit) cloudHandlerFunc {
+
+	reqPool := sync.Pool{
+		New: func() interface{} {
+			return new(Request)
+		},
+	}
+
+	respPool := sync.Pool{
+		New: func() interface{} {
+			return new(Response)
+		},
+	}
+
+	return func(ctx context.Context, request []byte) {
+		req := reqPool.Get().(*Request)
+		defer reqPool.Put(req)
+
+		err := json.Unmarshal(request, &req)
+		if err != nil {
+			log.Println(err)
+			return
+
+		}
+
+		resp := respPool.Get().(*Response)
+		resp.clean().prepareResponse(req)
+		defer respPool.Put(resp)
+
+		if conf.AutoPong {
+			if req.Type() == SimpleUtterance && req.Text() == "ping" {
+				if _, err := json.Marshal(resp.Text("pong")); err == nil {
+					return
+				}
+				log.Fatalln("Internal handler error")
+				return
+			}
+		}
+
+		back := make(chan *Response)
+		stream <- Kit{
+			Req:  req,
+			Resp: resp,
+			Ctx:  ctx,
+
+			c: back,
+		}
+
+		var response *Response
+		select {
+		case <-ctx.Done():
+			log.Println(ctx.Err())
+			return
+		case response = <-back:
 		}
 	}
 }

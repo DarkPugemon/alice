@@ -1,6 +1,7 @@
 package alice_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -12,6 +13,20 @@ func ExampleListenForWebhook() {
 	go http.ListenAndServe(":3000", nil)
 
 	updates.Loop(func(k alice.Kit) *alice.Response {
+		_, resp := k.Init()
+		return resp.Text("ok")
+	})
+}
+
+func ExampleListenForCloudHandler() {
+	var (
+		ctx context.Context
+		req []byte
+	)
+
+	updates := alice.ListenForCloudHandler(ctx, req, alice.Debug(true))
+
+	updates.Task(func(k alice.Kit) *alice.Response {
 		_, resp := k.Init()
 		return resp.Text("ok")
 	})
